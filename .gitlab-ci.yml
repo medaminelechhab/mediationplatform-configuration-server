@@ -1,0 +1,421 @@
+include:
+  # Maven template
+  - project: 'to-be-continuous/maven'
+    ref: '2.1.3'
+    file: '/templates/gitlab-ci-maven.yml'
+
+  # Docker template
+  - project: 'to-be-continuous/docker'
+    ref: '2.3.0'
+    file: '/templates/gitlab-ci-docker.yml'
+
+  # Helm --> K8s template
+  - project: 'to-be-continuous/helm'
+    ref: '2.0.4'
+    file: '/templates/gitlab-ci-helm.yml'
+
+variables:
+
+  ######### CHECKMARX ##############
+  CHECKMARX_PROJECTNAME: 'CxServer\MyProject\OBSIT\TAAS\DOF_SAMPLES\maven_sample'
+  CHECKMARX_SERVER_URL: 'https://securecode.itn.intraMyProject/'
+
+  ######### MAVEN###############
+  MAVEN_IMAGE: "proxy-docker.nexus-ein.com.intraMyProject/maven:3.9.9-eclipse-temurin-21-jammy"
+  MAVEN_BUILD_ARGS: "org.jacoco:jacoco-maven-plugin:prepare-agent verify org.jacoco:jacoco-maven-plugin:report -Dspring.profiles.active=native"
+  MAVEN_DEPLOY_ENABLED: "true"
+
+  #########  branch names  #############
+  DEV_REF: '/^feat-MEDIAPTF-1594/'
+  UAT_REF: '/^develop$/'
+  PROD_REF: '/^(master|main)$/'
+
+  ######### DOCKER #############
+  DOCKER_REGISTRY_URL: "apps-docker.nexus-ein.com.intraMyProject"
+  DOCKER_SNAPSHOT_IMAGE: "$DOCKER_REGISTRY_URL/0ko/$CI_PROJECT_NAME:$CI_COMMIT_REF_NAME"
+  DOCKER_RELEASE_IMAGE: "$DOCKER_REGISTRY_URL/0ko/$CI_PROJECT_NAME:$CI_COMMIT_REF_NAME"
+  DOCKER_REGISTRY_USER: "$NEXUS_LOGIN"
+  DOCKER_REGISTRY_PASSWORD: "$NEXUS_PASSWORD"
+  DOCKER_TRIVY_ADDR: "https://trivy.dos.tech.MyProject"
+
+  ######### K8S #################
+  HELM_YAMLLINT_CONFIG: "{extends: relaxed, rules: {line-length: disable}}"
+  HELM_CHART_DIR: "./k8s"
+  HELM_BASE_APP_NAME: "mediationplatform-configuration-server"
+  HELM_CLI_IMAGE: "products-docker.nexus-ein.com.intraMyProject/tools/diti/helm:3.3.4-alpine3-1"
+  HELM_DEPLOY_ARGS: upgrade --install --atomic --timeout 600s
+
+  HELM_DEV_APP_NAME: "mediationplatform-configuration-server"
+  HELM_DEV_VALUES: "./k8s/dev.yaml"
+  HELM_DEV_ENVIRONMENT_DOMAIN: "dev"
+  HELM_DEV_NAMESPACE: "0ko-cl-mptf-dev"
+
+  HELM_UAT_APP_NAME: "mediationplatform-configuration-server"
+  HELM_UAT_VALUES: "./k8s/uat.yaml"
+  HELM_UAT_ENVIRONMENT_DOMAIN: "uat"
+  HELM_UAT_NAMESPACE: "0ko-cl-mptf-uat"
+
+  HELM_PROD_APP_NAME: "mediationplatform-configuration-server"
+  HELM_PROD_VALUES: "./k8s/prod.yaml"
+  HELM_PROD_ENVIRONMENT_DOMAIN: "prod"
+  HELM_PROD_NAMESPACE: "customerlinksplatform-prod"
+
+  ###### Dependency Check arguments #######
+  MAVEN_DEPENDENCY_CHECK_ARGS: >-
+    org.owasp:dependency-check-maven:check
+    -DretireJsAnalyzerEnabled=false
+    -DassemblyAnalyzerEnabled=false
+    -Dformats=html,json,xml
+
+    ### Deploy jobs
+
+  ######### Develop Stage #################
+helm-dev:
+  extends: .helm-deploy
+  variables:
+    ENV_KIND: no-prod/
+    ENV_NAME: dev/
+    ENV_TYPE: dev
+    ENV_APP_NAME: "$HELM_DEV_APP_NAME"
+    ENV_KUBE_CONFIG: "$HELM_DEV_NPD_KUBE_CONFIG"
+    ENV_APP_SUFFIX: "dev"
+    ENV_NAMESPACE: "$HELM_DEV_NAMESPACE"
+    ENV_VALUES: "$HELM_DEV_VALUES"
+  environment:
+    name: dev
+    on_stop: helm-cleanup-dev
+  resource_group: dev
+  rules:
+    # exclude merge requests, tags and on $HELM_DEV_DISABLED set
+    - if: '$HELM_DEV_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on dev branches
+    - if: '$CI_COMMIT_REF_NAME =~ $DEV_REF'
+helm-values-dev-lint:
+  extends: .helm-values-lint
+  variables:
+    ENV_KIND: no-prod/
+    ENV_NAME: dev/
+  script:
+    - awkenvsubst < "$HELM_DEV_VALUES" > generated-values-review.yml
+    - yamllint -d "$HELM_YAMLLINT_CONFIG" $HELM_YAMLLINT_ARGS generated-values-review.yml
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID || $HELM_YAMLLINT_DISABLED == "true"'
+      when: never
+    # only on develop branch
+    - if: '$HELM_DEV_VALUES && $CI_COMMIT_REF_NAME =~ $DEV_REF'
+helm-dev-score:
+  extends: .helm-score
+  variables:
+    ENV_KIND: no-prod/
+    ENV_NAME: dev/
+  script:
+    - awkenvsubst < "$HELM_DEV_VALUES" > generated-values.yml
+    - helm template $HELM_CHART_DIR --values generated-values.yml | kube-score score ${HELM_KUBE_SCORE_ARGS} -
+  rules:
+    # exclude merge requests
+    - if: $CI_MERGE_REQUEST_ID
+      when: never
+    # exclude when $HELM_KUBE_SCORE_DISABLED is set
+    - if: '$HELM_KUBE_SCORE_DISABLED == "true"'
+      when: never
+    # else: only on develop branches + allow failure
+    - if: '$HELM_DEV_VALUES && $CI_COMMIT_REF_NAME =~ $DEV_REF'
+      exists:
+        - "**/Chart.yaml"
+      allow_failure: true
+# stop dev env (automatically triggered once branches are deleted)
+helm-cleanup-dev:
+  extends: .helm-cleanup
+  variables:
+    ENV_KIND: no-prod/
+    ENV_NAME: dev/
+    ENV_TYPE: devlopment
+    ENV_APP_NAME: "$HELM_DEV_APP_NAME"
+    ENV_KUBE_CONFIG: "$HELM_DEV_NPD_KUBE_CONFIG"
+    ENV_NAMESPACE: "$HELM_DEV_NAMESPACE"
+  environment:
+    name: dev
+    action: stop
+  resource_group: dev
+  rules:
+    # exclude merge requests, tags and on $HELM_DEV_DISABLED set
+    - if: '$HELM_DEV_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on dev branches
+    - if: '$CI_COMMIT_REF_NAME =~ $DEV_REF'
+      when: manual
+      allow_failure: true
+
+# test to dev env (only for feature branches)
+# enabled by default, disable this job by setting $HELM_DEV_DISABLED
+helm-test-dev:
+  extends: .helm-test
+  variables:
+    ENV_TYPE: dev
+    ENV_KUBE_CONFIG: "$HELM_DEV_NPD_KUBE_CONFIG"
+    ENV_NAMESPACE: "$HELM_DEV_NAMESPACE"
+  rules:
+    # exclude merge requests, tags and on $HELM_DEV_DISABLED set
+    - if: '$HELM_DEV_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on dev branches
+    - if: '$CI_COMMIT_REF_NAME =~ $DEV_REF && $HELM_TEST_ENABLED == "true"'
+
+
+      ######### UAT Stage #################
+helm-uat:
+  extends: .helm-deploy
+  variables:
+    ENV_KIND: no-prod/
+    ENV_NAME: uat/
+    ENV_TYPE: uat
+    ENV_APP_NAME: "$HELM_UAT_APP_NAME"
+    ENV_KUBE_CONFIG: "$HELM_UAT_NPD_KUBE_CONFIG"
+    ENV_APP_SUFFIX: "uat"
+    ENV_NAMESPACE: "$HELM_UAT_NAMESPACE"
+    ENV_VALUES: "$HELM_UAT_VALUES"
+  environment:
+    name: uat
+    on_stop: helm-cleanup-uat
+  resource_group: uat
+  rules:
+    # exclude merge requests, tags and on $HELM_UAT_DISABLED set
+    - if: '$HELM_UAT_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on UAT branches
+    - if: '$CI_COMMIT_REF_NAME =~ $UAT_REF'
+helm-values-uat-lint:
+  extends: .helm-values-lint
+  variables:
+    ENV_KIND: no-prod/
+    ENV_NAME: uat/
+  script:
+    - awkenvsubst < "$HELM_UAT_VALUES" > generated-values-review.yml
+    - yamllint -d "$HELM_YAMLLINT_CONFIG" $HELM_YAMLLINT_ARGS generated-values-review.yml
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID || $HELM_YAMLLINT_DISABLED == "true"'
+      when: never
+    # only on UAT branch
+    - if: '$HELM_UAT_VALUES && $CI_COMMIT_REF_NAME =~ $UAT_REF'
+helm-uat-score:
+  extends: .helm-score
+  variables:
+    ENV_KIND: no-prod/
+    ENV_NAME: uat/
+  script:
+    - awkenvsubst < "$HELM_UAT_VALUES" > generated-values.yml
+    - helm template $HELM_CHART_DIR --values generated-values.yml | kube-score score ${HELM_KUBE_SCORE_ARGS} -
+  rules:
+    # exclude merge requests
+    - if: $CI_MERGE_REQUEST_ID
+      when: never
+    # exclude when $HELM_KUBE_SCORE_DISABLED is set
+    - if: '$HELM_KUBE_SCORE_DISABLED == "true"'
+      when: never
+    # else: only on uat branches + allow failure
+    - if: '$HELM_UAT_VALUES && $CI_COMMIT_REF_NAME =~ $UAT_REF'
+      exists:
+        - "**/Chart.yaml"
+      allow_failure: true
+# stop uat env (automatically triggered once branches are deleted)
+helm-cleanup-uat:
+  extends: .helm-cleanup
+  variables:
+    ENV_KIND: no-prod/
+    ENV_NAME: uat/
+    ENV_TYPE: uat
+    ENV_APP_NAME: "$HELM_UAT_APP_NAME"
+    ENV_KUBE_CONFIG: "$HELM_UAT_NPD_KUBE_CONFIG"
+    ENV_NAMESPACE: "$HELM_UAT_NAMESPACE"
+  environment:
+    name: uat
+    action: stop
+  resource_group: uat
+  rules:
+    # exclude merge requests, tags and on $HELM_UAT_DISABLED set
+    - if: '$HELM_UAT_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on dev branches
+    - if: '$CI_COMMIT_REF_NAME =~ $UAT_REF'
+      when: manual
+      allow_failure: true
+
+# test to uat env (only for feature branches)
+# enabled by default, disable this job by setting $HELM_DEV_DISABLED
+helm-test-uat:
+  extends: .helm-test
+  variables:
+    ENV_TYPE: uat
+    ENV_KUBE_CONFIG: "$HELM_UAT_NPD_KUBE_CONFIG"
+    ENV_NAMESPACE: "$HELM_UAT_NAMESPACE"
+  rules:
+    # exclude merge requests, tags and on $HELM_DEV_DISABLED set
+    - if: '$HELM_UAT_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on dev branches
+    - if: '$CI_COMMIT_REF_NAME =~ $UAT_REF && $HELM_TEST_ENABLED == "true"'
+
+
+      ######### PROD Stage #################
+helm-PROD:
+  extends: .helm-deploy
+  variables:
+    ENV_KIND: prod/
+    ENV_NAME: prod/
+    ENV_TYPE: prod
+    ENV_APP_NAME: "$HELM_PROD_APP_NAME"
+    ENV_KUBE_CONFIG: "$HELM_PROD_KUBE_CONFIG"
+    ENV_APP_SUFFIX: "prod"
+    ENV_NAMESPACE: "customerlinksplatform-prod"
+    ENV_VALUES: "$HELM_PROD_VALUES"
+  environment:
+    name: prod
+    on_stop: helm-cleanup-prod
+  resource_group: prod
+  rules:
+    # exclude merge requests, tags and on $HELM_DEV_DISABLED set
+    - if: '$HELM_PROD_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on dev branches
+    - if: '$CI_COMMIT_REF_NAME =~ $PROD_REF'
+helm-values-prod-lint:
+  extends: .helm-values-lint
+  variables:
+    ENV_KIND: prod/
+    ENV_NAME: prod/
+  script:
+    - awkenvsubst < "$HELM_PROD_VALUES" > generated-values-review.yml
+    - yamllint -d "$HELM_YAMLLINT_CONFIG" $HELM_YAMLLINT_ARGS generated-values-review.yml
+  rules:
+    - if: '$CI_MERGE_REQUEST_ID || $HELM_YAMLLINT_DISABLED == "true"'
+      when: never
+    # only on develop branch
+    - if: '$HELM_PROD_VALUES && $CI_COMMIT_REF_NAME =~ $PROD_REF'
+helm-prod-score:
+  extends: .helm-score
+  variables:
+    ENV_KIND: prod/
+    ENV_NAME: prod/
+  script:
+    - awkenvsubst < "$HELM_PROD_VALUES" > generated-values.yml
+    - helm template $HELM_CHART_DIR --values generated-values.yml | kube-score score ${HELM_KUBE_SCORE_ARGS} -
+  rules:
+    # exclude merge requests
+    - if: $CI_MERGE_REQUEST_ID
+      when: never
+    # exclude when $HELM_KUBE_SCORE_DISABLED is set
+    - if: '$HELM_KUBE_SCORE_DISABLED == "true"'
+      when: never
+    # else: only on uat branches + allow failure
+    - if: '$HELM_PROD_VALUES && $CI_COMMIT_REF_NAME =~ $PROD_REF'
+      exists:
+        - "**/Chart.yaml"
+      allow_failure: true
+# stop dev env (automatically triggered once branches are deleted)
+helm-cleanup-prod:
+  extends: .helm-cleanup
+  variables:
+    ENV_KIND: prod/
+    ENV_NAME: prod/
+    ENV_TYPE: prod
+    ENV_APP_NAME: "$HELM_PROD_APP_NAME"
+    ENV_KUBE_CONFIG: "$HELM_PROD_KUBE_CONFIG"
+    ENV_NAMESPACE: "$HELM_PROD_NAMESPACE"
+  environment:
+    name: prod
+    action: stop
+  resource_group: prod
+  rules:
+    # exclude merge requests, tags and on $HELM_PROD_DISABLED set
+    - if: '$HELM_PROD_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on prod branches
+    - if: '$CI_COMMIT_REF_NAME =~ $PROD_REF'
+      when: manual
+      allow_failure: true
+
+# test to prod env (only for prod branch)
+# enabled by default, disable this job by setting $HELM_PROD_DISABLED
+helm-test-prod:
+  extends: .helm-test
+  variables:
+    ENV_TYPE: prod
+    ENV_KUBE_CONFIG: "$HELM_PROD_KUBE_CONFIG"
+    ENV_NAMESPACE: "$HELM_PROD_NAMESPACE"
+  rules:
+    # exclude merge requests, tags and on $HELM_PROD_DISABLED set
+    - if: '$HELM_PROD_DISABLED == "true" || $CI_MERGE_REQUEST_ID || $CI_COMMIT_TAG'
+      when: never
+    # only on prod branches
+    - if: '$CI_COMMIT_REF_NAME =~ $PROD_REF && $HELM_TEST_ENABLED == "true"'
+
+
+
+      ######### Desactivate  Stages #################
+mvn-forbid-snapshot-dependencies:
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == $DEV_REF'
+      when: never
+    - if: '$CI_COMMIT_REF_NAME == $PROD_REF'
+      when: never
+    - if: '$CI_COMMIT_REF_NAME == $UAT_REF'
+      when: never
+
+mvn-snapshot:
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == $DEV_REF'
+      when: never
+    - if: '$CI_COMMIT_REF_NAME == $PROD_REF'
+      when: never
+    - if: '$CI_COMMIT_REF_NAME == $UAT_REF'
+      when: never
+
+helm-review:
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == $DEV_REF'
+      when: never
+    - if: '$CI_COMMIT_REF_NAME == $PROD_REF'
+      when: never
+    - if: '$CI_COMMIT_REF_NAME == $UAT_REF'
+      when: never
+helm-cleanup-review:
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == $DEV_REF'
+      when: never
+    - if: '$CI_COMMIT_REF_NAME == $PROD_REF'
+      when: never
+    - if: '$CI_COMMIT_REF_NAME == $UAT_REF'
+      when: never
+
+
+# pipeline stages
+stages:
+  - build
+  - test
+  - pre-package
+  - package-build
+  - package-test
+  - infra
+  - deploy
+  - acceptance
+  - publish
+  - infra-prod
+  - production
+
+docker-hadolint:
+  allow_failure: true
+
+docker-trivy:
+  allow_failure: true
+
+helm-lint:
+  allow_failure: true
+
+mvn-sonar:
+  allow_failure: true
+
+
+
+
+

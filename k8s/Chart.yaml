@@ -1,0 +1,8 @@
+apiVersion: v1
+name: "mediationplatform-configuration-server"
+description: Centralized configuration Service for the mediation platform
+type: application
+version: 2.1.0
+appVersion: "2.1.0"
+sources:
+ - https://gitlab.tech.MyProject/cl-platform/mediationplatform-configuration-server

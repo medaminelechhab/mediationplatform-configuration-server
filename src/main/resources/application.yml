@@ -1,0 +1,16 @@
+server:
+  port:
+
+spring:
+  profiles:
+    active:
+  cloud:
+    config:
+      server:
+        git:
+          uri:
+          clone-on-start:
+          default-label:
+          host-key-algorithm:
+          strict-host-key-checking:
+          #the ssh properties(host-key and private key) are read by default from ~/.ssh/ folder

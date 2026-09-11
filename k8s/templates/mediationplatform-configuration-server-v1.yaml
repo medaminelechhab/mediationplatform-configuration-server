@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Values.namespace }}
+  name: service-mediationplatform-configuration-server-v1
+  labels:
+    {{- include "helm.labelsMediation" . | nindent 4 }}
+spec:
+  ports:
+    - port: 80
+      targetPort: 9000
+      protocol: TCP
+      name: http
+  selector:
+    app: mediationplatform-configuration-server
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Values.namespace }}
+  name:  mediationplatform-configuration-server
+  labels:
+    {{- include "helm.labelsMediation" . | nindent 4 }}
+spec:
+  minReadySeconds: 30
+  progressDeadlineSeconds: 120
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app:  mediationplatform-configuration-server
+  template:
+    metadata:
+      annotations:
+        co.elastic.logs/enabled: 'true'
+      labels:
+        app:  mediationplatform-configuration-server
+    spec:
+      securityContext:
+        runAsUser: {{ .Values.userId }}
+        runAsGroup: {{ .Values.groupId }}
+      imagePullSecrets:
+        - name: mediationplatform-configuration-server
+      containers:
+        - name: mediationplatform-configuration-server
+          image: {{ .Values.image }}
+          imagePullPolicy: Always
+          resources:
+            limits:
+              cpu: 1
+              memory: 512Mi
+            requests:
+              cpu: {{ .Values.cpu }}
+              memory: {{ .Values.memory }}
+          env:
+            - name: CONFIG_SERVER_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.namespace }}
+                  key: config-server-private-key
+            - name: JAVA_OPTS
+              value: '-Xmx2048m -Xms512m'
+            - name: SPRING_OUTPUT_ANSI_ENABLED
+              value: 'ALWAYS'
+            - name: CONFIG_BRANCH_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Values.namespace }}
+                  key: config-branch-name
